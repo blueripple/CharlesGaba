@@ -30,6 +30,7 @@ import qualified BlueRipple.Model.Election2.ModelRunner as MR
 import qualified BlueRipple.Model.Demographic.DataPrep as DDP
 import qualified BlueRipple.Model.Demographic.EnrichCensus as DMC
 import qualified BlueRipple.Model.Demographic.TableProducts as DTP
+import qualified BlueRipple.Model.Demographic.MarginalStructure as DMS
 import qualified BlueRipple.Model.Demographic.TPModel3 as DTM3
 import qualified BlueRipple.Data.LoadersCore as BRL
 import qualified BlueRipple.Model.CategorizeElection as CE
@@ -47,6 +48,7 @@ import qualified BlueRipple.Data.Small.Loaders as BRS
 import qualified BlueRipple.Data.ACS_Tables_Loaders as BRC
 import qualified BlueRipple.Data.ACS_Tables as BRC
 import qualified BlueRipple.Data.Redistricting as BLR
+import qualified BlueRipple.Data.RedistrictingTables as BLR
 import qualified BlueRipple.Data.DistrictOverlaps as DO
 import qualified BlueRipple.Data.FramesUtils as BRF
 import qualified BlueRipple.Utilities.KnitUtils as BR
@@ -124,8 +126,8 @@ pandocTemplate = K.FullySpecifiedTemplatePath "pandoc-templates/blueripple_basic
 dmr ::  DM.DesignMatrixRow (F.Record DP.LPredictorsR)
 dmr = MC.tDesignMatrixRow_d
 
-survey :: MC.TurnoutSurvey (F.Record DP.CESByCDR)
-survey = MC.CESSurvey
+survey :: MC.ActionSurvey (F.Record DP.CESByCDR)
+survey = MC.CESSurvey (DP.AllSurveyed DP.Both)
 
 aggregation :: MC.SurveyAggregation TE.ECVec
 aggregation = MC.WeightedAggregation MC.ContinuousBinomial
@@ -150,6 +152,7 @@ main = do
         (K.defaultKnitConfig $ Just cacheDir)
           { K.outerLogPrefix = Just "Gaba"
           , K.logIf = BR.knitLogSeverity $ BR.logLevel cmdLine -- K.logDiagnostic
+          , K.lcSeverity = mempty --M.fromList [("KH_Cache", K.Special), ("KH_Serialize", K.Special)]
           , K.pandocWriterConfig = pandocWriterConfig
           , K.serializeDict = BRCC.flatSerializeDict
           , K.persistCache = KC.persistStrictByteString (\t → toString (cacheDir <> "/" <> t))
@@ -164,8 +167,8 @@ main = do
                   <$> (K.ignoreCacheTimeM $ BRS.stateAbbrCrosswalkLoader)
     upperOnlyMap <- BRS.stateUpperOnlyMap
     singleCDMap <- BRS.stateSingleCDMap
-    let  turnoutConfig = MC.TurnoutConfig survey (MC.ModelConfig aggregation alphaModel (contramap F.rcast dmr))
-         prefConfig = MC.PrefConfig (MC.ModelConfig aggregation alphaModel (contramap F.rcast dmr))
+    let  turnoutConfig = MC.ActionConfig survey (MC.ModelConfig aggregation alphaModel (contramap F.rcast dmr))
+         prefConfig = MC.PrefConfig (DP.Validated DP.Both) (MC.ModelConfig aggregation alphaModel (contramap F.rcast dmr))
          analyzeOne s = K.logLE K.Info ("Working on " <> s) >> analyzeState cmdLine turnoutConfig Nothing prefConfig Nothing upperOnlyMap singleCDMap s
     allStateAnalysis_C <- fmap (fmap mconcat . sequenceA) $ traverse analyzeOne allStatesL
     K.ignoreCacheTime allStateAnalysis_C >>= writeModeled "modeled" . fmap F.rcast
@@ -187,7 +190,7 @@ type AnalyzeStateR = (FJ.JoinResult [GT.StateAbbreviation, GT.DistrictTypeC, GT.
 
 analyzeState :: (K.KnitEffects r, BRCC.CacheEffects r)
              => BR.CommandLine
-             -> MC.TurnoutConfig a b
+             -> MC.ActionConfig a b
              -> Maybe (MR.Scenario DP.PredictorsR)
              -> MC.PrefConfig b
              -> Maybe (MR.Scenario DP.PredictorsR)
@@ -204,10 +207,10 @@ analyzeState cmdLine tc tScenarioM pc pScenarioM upperOnlyMap singleCDMap state 
   modeledACSBySLDPSData_C <- modeledACSBySLD
   let stateSLDs_C = fmap (psDataForState state) modeledACSBySLDPSData_C
   presidentialElections_C <- BRS.presidentialElectionsWithIncumbency
-  draShareOverrides_C <- DP.loadOverrides "data/DRA_Shares/DRA_Share.csv" "DRA 2016-2021"
+  draShareOverrides_C <- DP.loadOverrides (BLR.draDataPath <> "DRA_Shares/DRA_Share.csv") "DRA 2016-2021"
   let dVSPres2020 = DP.ElexTargetConfig "PresWO" draShareOverrides_C 2020 presidentialElections_C
       dVSModel psName
-        = MR.runFullModelAH @SLDKeyR 2020 (cacheStructure state psName) tc tScenarioM pc pScenarioM dVSPres2020
+        = MR.runFullModelAH @SLDKeyR 2020 (cacheStructure state psName) tc tScenarioM pc pScenarioM (MR.VoteDTargets dVSPres2020)
   modeled_C <- fmap modeledMapToFrame <$> dVSModel (state <> "_SLD") stateSLDs_C
   draSLD_C <- BLR.allPassedSLD 2024 BRC.TY2021
   draCD_C <- BLR.allPassedCongressional 2024 BRC.TY2021
@@ -309,7 +312,7 @@ formatDistrictType = FCSV.liftFieldFormatter $ \case
 
 tsModelConfig modelId n =  DTM3.ModelConfig True (DTM3.dmr modelId n)
                            DTM3.AlphaHierNonCentered DTM3.ThetaSimple DTM3.NormalDist
-
+{-
 modeledACSBySLD :: forall r . (K.KnitEffects r, BRCC.CacheEffects r) => K.Sem r (K.ActionWithCacheTime r (DP.PSData SLDKeyR))
 modeledACSBySLD = do
   let (srcWindow, cachedSrc) = ACS.acs1Yr2012_22 @r
@@ -330,4 +333,34 @@ modeledACSBySLD = do
                                 jointFromMarginalPredictorCSR_ASR_C
                                 jointFromMarginalPredictorCASR_ASE_C
   BRCC.retrieveOrMakeD "model/election2/data/sld2024_ACS2022_PSData.bin" acsCASERBySLD
+    $ \x -> DP.PSData . fmap F.rcast <$> (BRS.addStateAbbrUsingFIPS $ F.filterFrame ((== DT.Citizen) . view DT.citizenC) x)
+-}
+
+modeledACSBySLD :: forall r . (K.KnitEffects r, BRCC.CacheEffects r) => K.Sem r (K.ActionWithCacheTime r (DP.PSData SLDKeyR))
+modeledACSBySLD = do
+  let (srcWindow, cachedSrc) = ACS.acs1Yr2012_22 @r
+  (jointFromMarginalPredictorCSR_ASR_C, _) <- DDP.cachedACSa5ByPUMA  srcWindow cachedSrc 2022 -- most recent available
+                                                 >>= DMC.predictorModel3 @'[DT.CitizenC] @'[DT.Age5C] @DMC.SRCA @DMC.SR
+                                                 (Right "CSR_ASR_ByPUMA")
+                                                 (Right "model/demographic/csr_asr_PUMA")
+                                                 (DTM3.Model $ tsModelConfig "CSR_ASR_ByPUMA" 71) -- use model not just mean
+                                                 False -- do not whiten
+                                                 Nothing Nothing Nothing . fmap (fmap F.rcast)
+  (jointFromMarginalPredictorCASR_ASE_C, _) <- DDP.cachedACSa5ByPUMA srcWindow cachedSrc 2022 -- most recent available
+                                                  >>= DMC.predictorModel3 @[DT.CitizenC, DT.Race5C] @'[DT.Education4C] @DMC.ASCRE @DMC.AS
+                                                  (Right "CASR_SER_ByPUMA")
+                                                  (Right "model/demographic/casr_ase_PUMA")
+                                                  (DTM3.Model $ tsModelConfig "CASR_ASE_ByPUMA" 141)
+                                                  False -- do not whiten
+                                                  Nothing Nothing Nothing . fmap (fmap F.rcast)
+  let optimalWeightsConfig = DTP.defaultOptimalWeightsAlgoConfig {DTP.owcMaxTimeM = Just 0.1, DTP.owcProbRelTolerance = 1e-4}
+      optimalWeightsLogStyle = DTP.OWKLogLevel K.Diagnostic
+  (acsCASERBySLD, _products) <- BRC.censusTablesForSLDs 2024 BRC.TY2022
+                                >>= DMC.predictedCensusCASER' DMC.stateAbbrFromFIPS
+                                DMS.GMDensity
+                                (DTP.viaOptimalWeights optimalWeightsConfig optimalWeightsLogStyle DTP.euclideanFull)
+                                (Right "model/stateLeg2024/sldDemographics")
+                                jointFromMarginalPredictorCSR_ASR_C
+                                jointFromMarginalPredictorCASR_ASE_C
+  BRCC.retrieveOrMakeD "model/stateLeg2024/data/sld2024_ACS2022_PSData.bin" acsCASERBySLD
     $ \x -> DP.PSData . fmap F.rcast <$> (BRS.addStateAbbrUsingFIPS $ F.filterFrame ((== DT.Citizen) . view DT.citizenC) x)
