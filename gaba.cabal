@@ -23,6 +23,7 @@ executable gaba
   main-is: Main.hs
   build-depends:
      blueripple-post-tools
+   , blueripple-tools-stateleg
    , blueripple-small-data-sets
    , blueripple-data-loading
    , blueripple-data-tools

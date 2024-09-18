@@ -1,4 +1,4 @@
-packages: ./ ../../libs/model-election2 ~/DataScience/hvega-utils
+packages: ./ ../../libs/model-election2 ~/DataScience/hvega-utils ~/BlueRipple/libs/tools-stateleg
 jobs: 4
 with-compiler: ghc
 
