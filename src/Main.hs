@@ -25,14 +25,7 @@ import qualified BlueRipple.Configuration as BR
 import qualified BlueRipple.Model.Election2.DataPrep as DP
 import qualified BlueRipple.Model.Election2.ModelCommon as MC
 import BlueRipple.Model.Election2.ModelCommon (ModelConfig)
---import qualified BlueRipple.Model.Election2.ModelCommon2 as MC2
 import qualified BlueRipple.Model.Election2.ModelRunner as MR
---import qualified BlueRipple.Model.Demographic.DataPrep as DDP
---import qualified BlueRipple.Model.Demographic.EnrichCensus as DMC
---import qualified BlueRipple.Model.Demographic.TableProducts as DTP
---import qualified BlueRipple.Model.Demographic.MarginalStructure as DMS
---import qualified BlueRipple.Model.Demographic.TPModel3 as DTM3
---import qualified BlueRipple.Data.LoadersCore as BRL
 import qualified BlueRipple.Model.CategorizeElection as CE
 
 import qualified BlueRipple.Data.CachingCore as BRCC
@@ -41,63 +34,29 @@ import qualified BlueRipple.Data.Types.Demographic as DT
 import qualified BlueRipple.Data.Types.Geographic as GT
 import qualified BlueRipple.Data.Types.Election as ET
 import qualified BlueRipple.Data.Types.Modeling as MT
---import qualified BlueRipple.Data.CES as CCES
---import qualified BlueRipple.Data.ACS_PUMS as ACS
---import qualified BlueRipple.Data.Small.DataFrames as BR
 import qualified BlueRipple.Data.Small.Loaders as BRS
---import qualified BlueRipple.Data.ACS_Tables_Loaders as BRC
 import qualified BlueRipple.Data.ACS_Tables as BRC
---import qualified BlueRipple.Data.Redistricting as BLR
---import qualified BlueRipple.Data.RedistrictingTables as BLR
 import qualified BlueRipple.Data.DistrictOverlaps as DO
---import qualified BlueRipple.Data.FramesUtils as BRF
---import qualified BlueRipple.Utilities.KnitUtils as BR
 
 import qualified Knit.Report as K
 import qualified Knit.Effect.AtomicCache as KC
 import qualified Text.Pandoc.Error as Pandoc
 import qualified System.Console.CmdArgs as CmdArgs
---import qualified Colonnade as C
 
---import qualified Stan.ModelBuilder as SMB
---import qualified Stan.ModelRunner as SMR
 import qualified Stan.ModelBuilder.TypedExpressions.Types as TE
---import qualified Stan.ModelBuilder.TypedExpressions.Statements as TE
---import qualified Stan.Parameters as SP
---import qualified Stan.ModelConfig as SC
---import qualified Stan.RScriptBuilder as SR
---import qualified Stan.ModelBuilder.BuildingBlocks as SBB
---import qualified Stan.ModelBuilder.BuildingBlocks.GroupAlpha as SG
 import qualified Stan.ModelBuilder.DesignMatrix as DM
---import qualified CmdStan as CS
 
 import qualified Frames as F
---import qualified Frames.Melt as F
---import qualified Frames.MapReduce as FMR
---import qualified Frames.Transform as FT
---import qualified Frames.SimpleJoins as FJ
 import qualified Frames.Constraints as FC
---import qualified Frames.Streamly.TH as FS
---import qualified Frames.Streamly.InCore as FI
 import qualified Frames.Streamly.CSV as FCSV
-import qualified Frames.Streamly.TH as FTH
+--import qualified Frames.Streamly.TH as FTH
 import qualified Frames.Streamly.OrMissing as FOM
 
---import qualified Frames.Streamly.Transform as FST
-
 import Frames.Streamly.Streaming.Streamly (StreamlyStream, Stream)
---import qualified Frames.Serialize as FS
 import qualified Control.Foldl as FL
---import qualified Control.Foldl.Statistics as FLS
 import Control.Lens (view, (^.))
 
---import qualified Flat
---import qualified Data.IntMap.Strict as IM
---import qualified Data.List as List
 import qualified Data.Map.Strict as M
---import qualified Data.Set as S
---import qualified Data.Vector as V
---import qualified Data.Vector.Unboxed as VU
 import qualified Data.Vinyl as V
 import qualified Data.Vinyl.TypeLevel as V
 import qualified Data.Vinyl.Functor as V
@@ -105,11 +64,11 @@ import qualified Data.Vinyl.Functor as V
 import qualified Text.Printf as PF
 import qualified System.Environment as Env
 
-type OrMissingInt = FOM.OrMissing Int
-type OrMissingDouble = FOM.OrMissing Double
+--type OrMissingInt = FOM.OrMissing Int
+--type OrMissingDouble = FOM.OrMissing Double
 
-FTH.declareColumn "CD" ''OrMissingInt
-FTH.declareColumn "CDPPL" ''OrMissingDouble
+--FTH.declareColumn "CD" ''OrMissingInt
+--FTH.declareColumn "CDPPL" ''OrMissingDouble
 
 
 templateVars ∷ Map String String
@@ -185,7 +144,7 @@ lastPush = do
   singleCDMap <- BRS.stateSingleCDMap
   let  turnoutConfig = MC.ActionConfig survey (MC.ModelConfig aggregation alphaModel (contramap F.rcast dmr))
        prefConfig = MC.PrefConfig (DP.Validated DP.Both) (MC.ModelConfig aggregation alphaModel (contramap F.rcast dmr))
-       analyzeOneBase s = K.logLE K.Info ("Working on " <> s) >> BSL.analyzeState turnoutConfig Nothing prefConfig Nothing upperOnlyMap singleCDMap s
+       analyzeOneBase s = K.logLE K.Info ("Working on " <> s) >> BSL.analyzeState BSL.Modeled turnoutConfig Nothing prefConfig Nothing upperOnlyMap singleCDMap s
        lpFilter = F.filterFrame (\r -> lpInCompetitiveCD r && lpFlippableSLD r)
   swingStateAnalysisBase_C <- fmap (fmap mconcat . sequenceA) $ traverse analyzeOneBase swingStatesL
   K.ignoreCacheTime swingStateAnalysisBase_C >>= writeModeled "lastPush_Base" . fmap F.rcast . lpFilter
@@ -203,7 +162,7 @@ lastPush = do
         _ -> id
       lpTurnoutS = MR.SimpleScenario "LastPustT" $ dobbsBoostF 0.05
       lpPrefS = MR.SimpleScenario "LastPushP" $ \r -> dobbsBoostF 0.025 r . reCoalitionF r
-      analyzeOneS s = K.logLE K.Info ("Working on " <> s) >> BSL.analyzeState turnoutConfig (Just lpTurnoutS) prefConfig (Just lpPrefS) upperOnlyMap singleCDMap s
+      analyzeOneS s = K.logLE K.Info ("Working on " <> s) >> BSL.analyzeState BSL.Modeled turnoutConfig (Just lpTurnoutS) prefConfig (Just lpPrefS) upperOnlyMap singleCDMap s
   swingStateAnalysisS_C <- fmap (fmap mconcat . sequenceA) $ traverse analyzeOneS swingStatesL
   K.ignoreCacheTime swingStateAnalysisS_C >>= writeModeled "lastPush_Scenario" . fmap F.rcast . lpFilter
 
@@ -220,13 +179,13 @@ gabaFull = do
   singleCDMap <- BRS.stateSingleCDMap
   let  turnoutConfig = MC.ActionConfig survey (MC.ModelConfig aggregation alphaModel (contramap F.rcast dmr))
        prefConfig = MC.PrefConfig (DP.Validated DP.Both) (MC.ModelConfig aggregation alphaModel (contramap F.rcast dmr))
-       analyzeOne s = K.logLE K.Info ("Working on " <> s) >> BSL.analyzeState turnoutConfig Nothing prefConfig Nothing upperOnlyMap singleCDMap s
+       analyzeOne s = K.logLE K.Info ("Working on " <> s) >> BSL.analyzeState BSL.Modeled turnoutConfig Nothing prefConfig Nothing upperOnlyMap singleCDMap s
   allStateAnalysis_C <- fmap (fmap mconcat . sequenceA) $ traverse analyzeOne allStatesL
   K.ignoreCacheTime allStateAnalysis_C >>= writeModeled "modeled" . fmap F.rcast
 
 writeModeled :: (K.KnitEffects r)
              => Text
-             -> F.FrameRec [GT.StateAbbreviation, GT.DistrictTypeC, GT.DistrictName,ET.DemShare, ET.RawPVI, MR.ModelCI, CE.DistCategory, CD, DO.Overlap, CDPPL]
+             -> F.FrameRec [GT.StateAbbreviation, GT.DistrictTypeC, GT.DistrictName,ET.DemShare, ET.RawPVI, MR.ModelCI, CE.DistCategory, BSL.CD, DO.Overlap, BSL.CDPPL]
              -> K.Sem r ()
 writeModeled csvName modeledEv = do
   let wText = FCSV.formatTextAsIs
