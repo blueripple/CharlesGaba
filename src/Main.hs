@@ -64,13 +64,6 @@ import qualified Data.Vinyl.Functor as V
 import qualified Text.Printf as PF
 import qualified System.Environment as Env
 
---type OrMissingInt = FOM.OrMissing Int
---type OrMissingDouble = FOM.OrMissing Double
-
---FTH.declareColumn "CD" ''OrMissingInt
---FTH.declareColumn "CDPPL" ''OrMissingDouble
-
-
 templateVars ∷ Map String String
 templateVars =
   M.fromList
@@ -144,7 +137,7 @@ lastPush = do
   singleCDMap <- BRS.stateSingleCDMap
   let  turnoutConfig = MC.ActionConfig survey (MC.ModelConfig aggregation alphaModel (contramap F.rcast dmr))
        prefConfig = MC.PrefConfig (DP.Validated DP.Both) (MC.ModelConfig aggregation alphaModel (contramap F.rcast dmr))
-       analyzeOneBase s = K.logLE K.Info ("Working on " <> s) >> BSL.analyzeState BSL.Modeled turnoutConfig Nothing prefConfig Nothing upperOnlyMap singleCDMap s
+       analyzeOneBase s = K.logLE K.Info ("Working on " <> s) >> BSL.analyzeStateGaba BSL.Modeled turnoutConfig Nothing prefConfig Nothing upperOnlyMap singleCDMap s
        lpFilter = F.filterFrame (\r -> lpInCompetitiveCD r && lpFlippableSLD r)
   swingStateAnalysisBase_C <- fmap (fmap mconcat . sequenceA) $ traverse analyzeOneBase swingStatesL
   K.ignoreCacheTime swingStateAnalysisBase_C >>= writeModeled "lastPush_Base" . fmap F.rcast . lpFilter
@@ -162,7 +155,7 @@ lastPush = do
         _ -> id
       lpTurnoutS = MR.SimpleScenario "LastPustT" $ dobbsBoostF 0.05
       lpPrefS = MR.SimpleScenario "LastPushP" $ \r -> dobbsBoostF 0.025 r . reCoalitionF r
-      analyzeOneS s = K.logLE K.Info ("Working on " <> s) >> BSL.analyzeState BSL.Modeled turnoutConfig (Just lpTurnoutS) prefConfig (Just lpPrefS) upperOnlyMap singleCDMap s
+      analyzeOneS s = K.logLE K.Info ("Working on " <> s) >> BSL.analyzeStateGaba BSL.Modeled turnoutConfig (Just lpTurnoutS) prefConfig (Just lpPrefS) upperOnlyMap singleCDMap s
   swingStateAnalysisS_C <- fmap (fmap mconcat . sequenceA) $ traverse analyzeOneS swingStatesL
   K.ignoreCacheTime swingStateAnalysisS_C >>= writeModeled "lastPush_Scenario" . fmap F.rcast . lpFilter
 
@@ -179,7 +172,7 @@ gabaFull = do
   singleCDMap <- BRS.stateSingleCDMap
   let  turnoutConfig = MC.ActionConfig survey (MC.ModelConfig aggregation alphaModel (contramap F.rcast dmr))
        prefConfig = MC.PrefConfig (DP.Validated DP.Both) (MC.ModelConfig aggregation alphaModel (contramap F.rcast dmr))
-       analyzeOne s = K.logLE K.Info ("Working on " <> s) >> BSL.analyzeState BSL.Modeled turnoutConfig Nothing prefConfig Nothing upperOnlyMap singleCDMap s
+       analyzeOne s = K.logLE K.Info ("Working on " <> s) >> BSL.analyzeStateGaba BSL.Modeled turnoutConfig Nothing prefConfig Nothing upperOnlyMap singleCDMap s
   allStateAnalysis_C <- fmap (fmap mconcat . sequenceA) $ traverse analyzeOne allStatesL
   K.ignoreCacheTime allStateAnalysis_C >>= writeModeled "modeled" . fmap F.rcast
 
@@ -235,140 +228,3 @@ formatDistrictType = FCSV.liftFieldFormatter $ \case
   GT.StateUpper -> "Upper House"
   GT.StateLower -> "Lower House"
   GT.Congressional -> "Error: Congressional District!"
-
-
-{-
-stateUpperOnlyMap :: (K.KnitEffects r, BRCC.CacheEffects r) => K.Sem r (Map Text Bool)
-stateUpperOnlyMap = FL.fold (FL.premap (\r -> (r ^. GT.stateAbbreviation, r ^. BR.sLDUpperOnly)) FL.map)
-                    <$> K.ignoreCacheTimeM BRS.stateAbbrCrosswalkLoader
-
-
-type AnalyzeStateR = (FJ.JoinResult [GT.StateAbbreviation, GT.DistrictTypeC, GT.DistrictName]
-                      (SLDKeyR V.++ '[MR.ModelCI])
-                      BLR.DRAnalysisR)
-                     V.++ [CE.DistCategory, DO.Overlap, CD, CDPPL]
-
-analyzeState :: (K.KnitEffects r, BRCC.CacheEffects r)
-             => BR.CommandLine
-             -> MC.ActionConfig a b
-             -> Maybe (MR.Scenario DP.PredictorsR)
-             -> MC.PrefConfig b
-             -> Maybe (MR.Scenario DP.PredictorsR)
-             -> Map Text Bool
-             -> Map Text Bool
-             -> Text
-             -> K.Sem r (K.ActionWithCacheTime r (F.FrameRec AnalyzeStateR))
-analyzeState cmdLine tc tScenarioM pc pScenarioM upperOnlyMap singleCDMap state = do
-  let cacheStructure state' psName = MR.CacheStructure (Right "model/election2/stan/") (Right "model/election2")
-                                    psName "AllCells" state'
-  let psDataForState :: Text -> DP.PSData SLDKeyR -> DP.PSData SLDKeyR
-      psDataForState sa = DP.PSData . F.filterFrame ((== sa) . view GT.stateAbbreviation) . DP.unPSData
-      modelMid = MT.ciMid . view MR.modelCI
-  modeledACSBySLDPSData_C <- modeledACSBySLD
-  let stateSLDs_C = fmap (psDataForState state) modeledACSBySLDPSData_C
-  presidentialElections_C <- BRS.presidentialElectionsWithIncumbency
-  draShareOverrides_C <- DP.loadOverrides (BLR.draDataPath <> "DRA_Shares/DRA_Share.csv") "DRA 2016-2021"
-  let dVSPres2020 = DP.ElexTargetConfig "PresWO" draShareOverrides_C 2020 presidentialElections_C
-      dVSModel psName
-        = MR.runFullModelAH @SLDKeyR 2020 (cacheStructure state psName) tc tScenarioM pc pScenarioM (MR.VoteDTargets dVSPres2020)
-  modeled_C <- fmap modeledMapToFrame <$> dVSModel (state <> "_SLD") stateSLDs_C
-  draSLD_C <- BLR.allPassedSLD 2024 BRC.TY2021
-  draCD_C <- BLR.allPassedCongressional 2024 BRC.TY2021
-  let deps = (,,) <$> modeled_C <*> draSLD_C <*> draCD_C
-  BRCC.retrieveOrMakeFrame ("gaba/" <> state <> "_analysis.bin") deps $ \(modeled, draSLD, draCD) -> do
-    let draSLD_forState = F.filterFrame ((== state) . view GT.stateAbbreviation) draSLD
-        draCDPPLMap = FL.fold (FL.premap (\r -> (r ^. GT.districtName, r ^. ET.demShare )) FL.map)
-                      $ F.filterFrame ((== state) . view GT.stateAbbreviation) draCD
-        (modeledAndDRA, missingModelDRA)
-          = FJ.leftJoinWithMissing @[GT.StateAbbreviation, GT.DistrictTypeC, GT.DistrictName] modeled draSLD_forState
-    when (not $ null missingModelDRA) $ K.knitError $ "br-Gaba: Missing keys in modeledDVs/dra join: " <> show missingModelDRA
-    let (safe, lean, tilt) = (0.1, 0.05, 0.02)
-        lrF = CE.leanRating safe lean tilt
-        compText :: (FC.ElemsOf rs [ET.DemShare, MR.ModelCI]) => F.Record rs -> Text
-        compText r =
-          let lrPPL = lrF (r ^. ET.demShare)
-              lrDPL = lrF $ modelMid r
-          in CE.pPLAndDPL lrPPL lrDPL
-        compareOn f x y = compare (f x) (f y)
-        compareRows x y = compareOn (view GT.stateAbbreviation) x y
-                          <> compareOn (view GT.districtTypeC) x y
-                          <> GT.districtNameCompare (x ^. GT.districtName) (y ^. GT.districtName)
-        competitivePPL r = let x = r ^. ET.demShare in x >= 0.4 && x <= 0.6
-        sortAndFilter = F.toFrame . sortBy compareRows . filter competitivePPL . FL.fold FL.list
-        withModelComparison = fmap (\r -> r F.<+> FT.recordSingleton @CE.DistCategory (compText r)) $ sortAndFilter modeledAndDRA
-    maxOverlapsM <- fmap (>>= DO.maxSLD_CDOverlaps) $ DO.sldCDOverlaps upperOnlyMap singleCDMap 2024 BRC.TY2021 state
---    maxOverlaps <- K.knitMaybe "Failed to find max overlaps" maxOverlapsM
-    case maxOverlapsM of
-      Just maxOverlaps -> do
-        let (withOverlaps, missingOverlaps)
-              = FJ.leftJoinWithMissing @[GT.DistrictTypeC, GT.DistrictName] withModelComparison maxOverlaps
-        when (not $ null missingOverlaps) $ K.knitError $ "br-Gaba: Missing keys in modeledDVs+dra/overlaps join: " <> show missingOverlaps
-        let cd r = r ^. GT.congressionalDistrict
-            omCD = FT.recordSingleton @CD . FOM.Present . cd
-            omCDPPL r = FT.recordSingleton @CDPPL $ FOM.toOrMissing $ M.lookup (show $ cd r) draCDPPLMap
-            addBoth r = FT.mutate (\r -> omCD r F.<+> omCDPPL r) r
-        pure $ fmap (F.rcast . addBoth) withOverlaps
-      Nothing -> do
-        let overlapCols :: F.Record [DO.Overlap, CD, CDPPL] = 1 F.&: FOM.Missing F.&: FOM.Missing F.&: V.RNil
-            withOverlaps = FT.mutate (const overlapCols) <$> withModelComparison
-        pure withOverlaps
-
-
-modeledMapToFrame :: MC.PSMap SLDKeyR MT.ConfidenceInterval -> F.FrameRec ModeledR
-modeledMapToFrame = F.toFrame . fmap (\(k, ci) -> k F.<+> FT.recordSingleton @MR.ModelCI ci) . M.toList . MC.unPSMap
--}
-
-
-{-
-modeledACSBySLD :: forall r . (K.KnitEffects r, BRCC.CacheEffects r) => K.Sem r (K.ActionWithCacheTime r (DP.PSData SLDKeyR))
-modeledACSBySLD = do
-  let (srcWindow, cachedSrc) = ACS.acs1Yr2012_22 @r
-  (jointFromMarginalPredictorCSR_ASR_C, _) <- DDP.cachedACSa5ByPUMA  srcWindow cachedSrc 2022 -- most recent available
-                                              >>= DMC.predictorModel3 @'[DT.CitizenC] @'[DT.Age5C] @DMC.SRCA @DMC.SR
-                                              (Right "CSR_ASR_ByPUMA")
-                                              (Right "model/demographic/csr_asr_PUMA")
-                                              (DTM3.Model $ tsModelConfig "CSR_ASR_ByPUMA" 71) -- use model not just mean
-                                              Nothing Nothing Nothing . fmap (fmap F.rcast)
-  (jointFromMarginalPredictorCASR_ASE_C, _) <- DDP.cachedACSa5ByPUMA srcWindow cachedSrc 2022 -- most recent available
-                                               >>= DMC.predictorModel3 @[DT.CitizenC, DT.Race5C] @'[DT.Education4C] @DMC.ASCRE @DMC.AS
-                                               (Right "CASR_SER_ByPUMA")
-                                               (Right "model/demographic/casr_ase_PUMA")
-                                               (DTM3.Model $ tsModelConfig "CASR_ASE_ByPUMA" 141)
-                                               Nothing Nothing Nothing . fmap (fmap F.rcast)
-  (acsCASERBySLD, _products) <- BRC.censusTablesForSLDs 2024 BRC.TY2022
-                                >>= DMC.predictedCensusCASER' (DTP.viaNearestOnSimplex) (Right "model/election2/sldDemographics")
-                                jointFromMarginalPredictorCSR_ASR_C
-                                jointFromMarginalPredictorCASR_ASE_C
-  BRCC.retrieveOrMakeD "model/election2/data/sld2024_ACS2022_PSData.bin" acsCASERBySLD
-    $ \x -> DP.PSData . fmap F.rcast <$> (BRS.addStateAbbrUsingFIPS $ F.filterFrame ((== DT.Citizen) . view DT.citizenC) x)
-
-
-modeledACSBySLD :: forall r . (K.KnitEffects r, BRCC.CacheEffects r) => K.Sem r (K.ActionWithCacheTime r (DP.PSData SLDKeyR))
-modeledACSBySLD = do
-  let (srcWindow, cachedSrc) = ACS.acs1Yr2012_22 @r
-  (jointFromMarginalPredictorCSR_ASR_C, _) <- DDP.cachedACSa5ByPUMA  srcWindow cachedSrc 2022 -- most recent available
-                                                 >>= DMC.predictorModel3 @'[DT.CitizenC] @'[DT.Age5C] @DMC.SRCA @DMC.SR
-                                                 (Right "CSR_ASR_ByPUMA")
-                                                 (Right "model/demographic/csr_asr_PUMA")
-                                                 (DTM3.Model $ tsModelConfig "CSR_ASR_ByPUMA" 71) -- use model not just mean
-                                                 False -- do not whiten
-                                                 Nothing Nothing Nothing . fmap (fmap F.rcast)
-  (jointFromMarginalPredictorCASR_ASE_C, _) <- DDP.cachedACSa5ByPUMA srcWindow cachedSrc 2022 -- most recent available
-                                                  >>= DMC.predictorModel3 @[DT.CitizenC, DT.Race5C] @'[DT.Education4C] @DMC.ASCRE @DMC.AS
-                                                  (Right "CASR_SER_ByPUMA")
-                                                  (Right "model/demographic/casr_ase_PUMA")
-                                                  (DTM3.Model $ tsModelConfig "CASR_ASE_ByPUMA" 141)
-                                                  False -- do not whiten
-                                                  Nothing Nothing Nothing . fmap (fmap F.rcast)
-  let optimalWeightsConfig = DTP.defaultOptimalWeightsAlgoConfig {DTP.owcMaxTimeM = Just 0.1, DTP.owcProbRelTolerance = 1e-4}
-      optimalWeightsLogStyle = DTP.OWKLogLevel K.Diagnostic
-  (acsCASERBySLD, _products) <- BRC.censusTablesForSLDs 2024 BRC.TY2022
-                                >>= DMC.predictedCensusCASER' DMC.stateAbbrFromFIPS
-                                DMS.GMDensity
-                                (DTP.viaOptimalWeights optimalWeightsConfig optimalWeightsLogStyle DTP.euclideanFull)
-                                (Right "model/stateLeg2024/sldDemographics")
-                                jointFromMarginalPredictorCSR_ASR_C
-                                jointFromMarginalPredictorCASR_ASE_C
-  BRCC.retrieveOrMakeD "model/stateLeg2024/data/sld2024_ACS2022_PSData.bin" acsCASERBySLD
-    $ \x -> DP.PSData . fmap F.rcast <$> (BRS.addStateAbbrUsingFIPS $ F.filterFrame ((== DT.Citizen) . view DT.citizenC) x)
--}
