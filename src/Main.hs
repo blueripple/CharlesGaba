@@ -24,7 +24,7 @@ import qualified BlueRipple.Tools.StateLeg.Analysis as BSL
 import qualified BlueRipple.Configuration as BR
 import qualified BlueRipple.Model.Election2.DataPrep as DP
 import qualified BlueRipple.Model.Election2.ModelCommon as MC
-import BlueRipple.Model.Election2.ModelCommon (ModelConfig)
+--import BlueRipple.Model.Election2.ModelCommon (ModelConfig)
 import qualified BlueRipple.Model.Election2.ModelRunner as MR
 import qualified BlueRipple.Model.CategorizeElection as CE
 
@@ -43,8 +43,8 @@ import qualified Knit.Effect.AtomicCache as KC
 import qualified Text.Pandoc.Error as Pandoc
 import qualified System.Console.CmdArgs as CmdArgs
 
-import qualified Stan.ModelBuilder.TypedExpressions.Types as TE
-import qualified Stan.ModelBuilder.DesignMatrix as DM
+import qualified Stan as TE
+import qualified Stan as DM
 
 import qualified Frames as F
 import qualified Frames.Constraints as FC
@@ -77,7 +77,7 @@ pandocTemplate ∷ K.TemplatePath
 pandocTemplate = K.FullySpecifiedTemplatePath "pandoc-templates/blueripple_basic.html"
 
 dmr ::  DM.DesignMatrixRow (F.Record DP.LPredictorsR)
-dmr = MC.tDesignMatrixRow_d
+dmr = MC.tDesignMatrixRow_d ""
 
 survey :: MC.ActionSurvey (F.Record DP.CESByCDR)
 survey = MC.CESSurvey (DP.AllSurveyed DP.Both)
